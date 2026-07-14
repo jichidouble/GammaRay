@@ -14,15 +14,13 @@
 #ifndef GAMMARAY_WIDGETINSPECTOR_WIDGETINSPECTORINTERFACE_H
 #define GAMMARAY_WIDGETINSPECTOR_WIDGETINSPECTORINTERFACE_H
 
+#include <common/remoteviewframe.h>
+
 #include <QDataStream>
 #include <QMetaType>
 #include <QObject>
 #include <QRect>
 #include <QVector>
-
-QT_BEGIN_NAMESPACE
-class QImage;
-QT_END_NAMESPACE
 
 namespace GammaRay {
 class WidgetInspectorInterface : public QObject
@@ -54,8 +52,15 @@ public slots:
 
     virtual void analyzePainting() = 0;
 
+    // Return a frame for the currently selected widget without creating a
+    // target-side image file. The frame is serialised over GammaRay's normal
+    // remote object protocol.
+    virtual void requestWidgetScreenshot() = 0;
+
 signals:
     void featuresChanged();
+    void widgetScreenshotReceived(const GammaRay::RemoteViewFrame &frame);
+    void widgetScreenshotFailed(const QString &message);
 
 private:
     Features m_features;

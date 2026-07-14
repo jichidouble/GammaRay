@@ -5,6 +5,9 @@ Leveraging the QObject introspection mechanism it allows you to observe and
 manipulate your application at runtime. This works both locally on your
 workstation and remotely on an embedded target.
 
+> This fork adds a headless Model Context Protocol server for Qt runtime monitoring and validation.
+> See [mcp/README.md](mcp/README.md) for the Qt 6.11.1/MinGW build and integration guide.
+
 Augmenting your instruction-level debugger, GammaRay allows you to work on a
 much higher level, with the same concepts as the frameworks you use. This is
 especially useful for the more complex Qt frameworks such as model/view, state

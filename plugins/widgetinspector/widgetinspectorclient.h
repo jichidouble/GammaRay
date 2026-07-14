@@ -31,6 +31,7 @@ private:
     void saveAsSvg(const QString &fileName) override;
     void saveAsUiFile(const QString &fileName) override;
     void analyzePainting() override;
+    void requestWidgetScreenshot() override;
 };
 }
 

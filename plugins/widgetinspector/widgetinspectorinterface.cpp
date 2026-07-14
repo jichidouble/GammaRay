@@ -39,6 +39,7 @@ WidgetInspectorInterface::WidgetInspectorInterface(QObject *parent)
 {
     StreamOperators::registerOperators<Features>();
     StreamOperators::registerOperators<WidgetFrameData>();
+    StreamOperators::registerOperators<RemoteViewFrame>();
 
     ObjectBroker::registerObject<WidgetInspectorInterface *>(this);
 }

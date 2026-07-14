@@ -253,6 +253,11 @@ if(GAMMARAY_PROBE_ONLY_BUILD)
 endif()
 
 gammaray_option(GAMMARAY_BUILD_UI "Build the GammaRay client and in-process UI." ${GAMMARAY_BUILD_UI_DEFAULT})
+gammaray_option(
+    GAMMARAY_BUILD_MCP
+    "Build the headless Model Context Protocol server for runtime inspection and validation."
+    ${GAMMARAY_BUILD_UI_DEFAULT}
+)
 
 if(GAMMARAY_PROBE_ONLY_BUILD AND GAMMARAY_CLIENT_ONLY_BUILD)
     message(FATAL_ERROR "You can only use one of the *ONLY* option.")
@@ -837,6 +842,9 @@ if(GAMMARAY_BUILD_UI AND TARGET Qt::Widgets)
     if(NOT GAMMARAY_PROBE_ONLY_BUILD)
         add_subdirectory(client)
         add_subdirectory(app)
+        if(GAMMARAY_BUILD_MCP)
+            add_subdirectory(mcp)
+        endif()
     endif()
 endif()
 if(BUILD_TESTING

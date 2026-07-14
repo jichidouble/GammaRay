@@ -37,3 +37,8 @@ void WidgetInspectorClient::analyzePainting()
 {
     Endpoint::instance()->invokeObject(objectName(), "analyzePainting");
 }
+
+void WidgetInspectorClient::requestWidgetScreenshot()
+{
+    Endpoint::instance()->invokeObject(objectName(), "requestWidgetScreenshot");
+}

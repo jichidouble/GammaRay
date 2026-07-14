@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "gammaray": {
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "E:\\Projects\\GammaRay-MCP\\GammaRay\\scripts\\run-mcp.ps1"
+      ]
+    }
+  }
+}

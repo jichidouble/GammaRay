@@ -76,6 +76,7 @@ private slots:
     void saveAsUiFile(const QString &fileName) override;
 
     void analyzePainting() override;
+    void requestWidgetScreenshot() override;
 
     void updateWidgetPreview();
 

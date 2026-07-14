@@ -381,12 +381,18 @@ void Launcher::readyRead()
         return;
 
     d->safetyTimer.stop();
-    const auto listenAddress = d->options.probeSettings().value("ServerAddress");
-    if (listenAddress.isEmpty() || listenAddress.startsWith("tcp://0.0.0.0")) {
-        printAllAvailableIPs();
-    } else {
-        std::cout << "GammaRay server listening on: " << qPrintable(d->serverAddress.toString())
-                  << std::endl;
+    const QByteArray suppressOutputValue = d->options.probeSettings()
+                                               .value("SuppressLauncherStandardOutput");
+    const bool suppressStandardOutput = suppressOutputValue == "true"
+        || suppressOutputValue == "1";
+    if (!suppressStandardOutput) {
+        const auto listenAddress = d->options.probeSettings().value("ServerAddress");
+        if (listenAddress.isEmpty() || listenAddress.startsWith("tcp://0.0.0.0")) {
+            printAllAvailableIPs();
+        } else {
+            std::cout << "GammaRay server listening on: " << qPrintable(d->serverAddress.toString())
+                      << std::endl;
+        }
     }
 
     if (d->options.uiMode() == LaunchOptions::OutOfProcessUi)

@@ -477,6 +477,18 @@ void WidgetInspectorServer::analyzePainting()
     m_overlayWidget->show();
 }
 
+void WidgetInspectorServer::requestWidgetScreenshot()
+{
+    if (!m_selectedWidget) {
+        emit widgetScreenshotFailed(QStringLiteral("No QWidget is selected in the Widget Inspector."));
+        return;
+    }
+
+    RemoteViewFrame frame;
+    frame.setImage(imageForWidget(m_selectedWidget));
+    emit widgetScreenshotReceived(frame);
+}
+
 void WidgetInspectorServer::checkFeatures()
 {
     Features f = NoFeature;
