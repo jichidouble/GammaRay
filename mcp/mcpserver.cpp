@@ -62,6 +62,8 @@ constexpr auto MessageModelName = "com.kdab.GammaRay.MessageModel";
 constexpr auto ProblemModelName = "com.kdab.GammaRay.ProblemModel";
 constexpr auto WidgetTreeModelName = "com.kdab.GammaRay.WidgetTree";
 constexpr auto WidgetRemoteViewName = "com.kdab.GammaRay.WidgetRemoteView";
+constexpr auto QuickItemModelName = "com.kdab.GammaRay.QuickItemModel";
+constexpr auto QuickRemoteViewName = "com.kdab.GammaRay.QuickRemoteView";
 
 class McpProblemReporterClient : public ProblemReporterInterface
 {
@@ -429,6 +431,12 @@ void McpServer::handleToolCall(const QJsonValue &id, const QJsonObject &params)
         callGrabWidget(id, arguments);
     else if (name == QLatin1String("gammaray_grab_window"))
         callGrabWindow(id, arguments);
+    else if (name == QLatin1String("gammaray_list_quick_items"))
+        callListQuickItems(id, arguments);
+    else if (name == QLatin1String("gammaray_grab_quick_window"))
+        callGrabQuickWindow(id, arguments);
+    else if (name == QLatin1String("gammaray_grab_quick_item"))
+        callGrabQuickItem(id, arguments);
     else
         sendProtocolError(id, -32602, QStringLiteral("Unknown tool: %1").arg(name));
 }
@@ -629,6 +637,36 @@ QJsonArray McpServer::tools() const
         QStringLiteral("gammaray_grab_window"), QStringLiteral("Capture top-level window PNG"),
         QStringLiteral("Capture the top-level QWidget window containing the selected QWidget as an in-memory PNG through GammaRay's remote view. Returns an MCP image content item and size metadata."),
         screenshotSchema, true, true, false, false));
+
+    result.append(toolDefinition(
+        QStringLiteral("gammaray_list_quick_items"), QStringLiteral("List Qt Quick item tree"),
+        QStringLiteral("Read a bounded snapshot of the active Qt Quick item hierarchy. Returned object paths identify items for property inspection and Quick capture."),
+        QJsonObject {
+            { QStringLiteral("type"), QStringLiteral("object") },
+            { QStringLiteral("properties"), QJsonObject { { QStringLiteral("pattern"), stringSchema(QStringLiteral("Optional case-insensitive regular expression matched against item name and type.")) }, { QStringLiteral("maxDepth"), integerSchema(QStringLiteral("Maximum Qt Quick item tree depth."), 0, 20, 5) }, { QStringLiteral("limit"), integerSchema(QStringLiteral("Maximum returned Qt Quick items."), 1, 2000, 250) }, { QStringLiteral("timeoutMs"), integerSchema(QStringLiteral("Remote model loading timeout."), 250, 30000, 5000) } } },
+            { QStringLiteral("additionalProperties"), false } },
+        true, true, false, false));
+
+    const QJsonObject quickCaptureProperties {
+        { QStringLiteral("objectPath"), stringSchema(QStringLiteral("Slash-separated QObject path returned by gammaray_list_quick_items. It must identify a QQuickItem in the active scene.")) },
+        { QStringLiteral("maxWidth"), integerSchema(QStringLiteral("Maximum PNG width; larger images are scaled down without changing aspect ratio."), 1, 8192, 1920) },
+        { QStringLiteral("maxHeight"), integerSchema(QStringLiteral("Maximum PNG height; larger images are scaled down without changing aspect ratio."), 1, 8192, 1080) },
+        { QStringLiteral("timeoutMs"), integerSchema(QStringLiteral("Remote Quick Inspector selection and image request timeout."), 250, 30000, 10000) }
+    };
+    const QJsonObject quickCaptureSchema {
+        { QStringLiteral("type"), QStringLiteral("object") },
+        { QStringLiteral("properties"), quickCaptureProperties },
+        { QStringLiteral("required"), QJsonArray { QStringLiteral("objectPath") } },
+        { QStringLiteral("additionalProperties"), false }
+    };
+    result.append(toolDefinition(
+        QStringLiteral("gammaray_grab_quick_window"), QStringLiteral("Capture Qt Quick window PNG"),
+        QStringLiteral("Capture the complete Qt Quick window containing the selected QQuickItem as an in-memory PNG through GammaRay's Quick Inspector remote view."),
+        quickCaptureSchema, true, true, false, false));
+    result.append(toolDefinition(
+        QStringLiteral("gammaray_grab_quick_item"), QStringLiteral("Capture Qt Quick item PNG"),
+        QStringLiteral("Capture the selected QQuickItem as an in-memory PNG by cropping GammaRay's Quick Inspector remote-view frame."),
+        quickCaptureSchema, true, true, false, false));
     return result;
 }
 
@@ -1144,6 +1182,28 @@ void McpServer::callGrabWidget(const QJsonValue &id, const QJsonObject &argument
 void McpServer::callGrabWindow(const QJsonValue &id, const QJsonObject &arguments)
 {
     callGrabImage(id, arguments, true);
+}
+
+void McpServer::callListQuickItems(const QJsonValue &id, const QJsonObject &)
+{
+    sendToolError(id, QStringLiteral("Qt Quick item discovery is not available yet."),
+                  { { QStringLiteral("model"), QString::fromLatin1(QuickItemModelName) } });
+}
+
+void McpServer::callGrabQuickWindow(const QJsonValue &id, const QJsonObject &arguments)
+{
+    callGrabQuickImage(id, arguments, false);
+}
+
+void McpServer::callGrabQuickItem(const QJsonValue &id, const QJsonObject &arguments)
+{
+    callGrabQuickImage(id, arguments, true);
+}
+
+void McpServer::callGrabQuickImage(const QJsonValue &id, const QJsonObject &, bool)
+{
+    sendToolError(id, QStringLiteral("Qt Quick capture is not available yet."),
+                  { { QStringLiteral("remoteView"), QString::fromLatin1(QuickRemoteViewName) } });
 }
 
 void McpServer::callGrabImage(const QJsonValue &id, const QJsonObject &arguments,

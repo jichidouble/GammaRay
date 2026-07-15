@@ -20,10 +20,12 @@ target_link_libraries(
             gammaray_launcher
             gammaray_common
             gammaray_common_internal
+            gammaray_quickinspector_shared
             gammaray_ui
             Qt::Core
             Qt::Gui
             Qt::Network
+            Qt::Quick
             Qt::Widgets
 )
 set_target_properties(

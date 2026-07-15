@@ -80,6 +80,11 @@ private:
     void callGrabWindow(const QJsonValue &id, const QJsonObject &arguments);
     void callGrabImage(const QJsonValue &id, const QJsonObject &arguments,
                        bool captureWindow);
+    void callListQuickItems(const QJsonValue &id, const QJsonObject &arguments);
+    void callGrabQuickWindow(const QJsonValue &id, const QJsonObject &arguments);
+    void callGrabQuickItem(const QJsonValue &id, const QJsonObject &arguments);
+    void callGrabQuickImage(const QJsonValue &id, const QJsonObject &arguments,
+                            bool cropToItem);
 
     bool ensureReady(const QJsonValue &id) const;
     bool prepareSession(const QJsonValue &id);
