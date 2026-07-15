@@ -18,7 +18,7 @@ The implementation is intentionally based on the existing Quick Inspector protoc
 
 Quick Inspector already registers `com.kdab.GammaRay.QuickItemModel` and `com.kdab.GammaRay.QuickRemoteView`. The MCP server will retrieve those remote objects through `ObjectBroker`, just as it currently accesses the Widget Inspector model and remote view.
 
-For item discovery, the server snapshots the Quick Item model, reads each row's `ObjectId`, and resolves that ID through the QObject-tree model to supply a stable `objectPath`. For capture, the server resolves the requested QObject path to an `ObjectId`, selects the matching Quick Item model row, waits for `QuickRemoteView::frameUpdated`, and converts the resulting `RemoteViewFrame` to PNG. Window capture returns the complete frame. Item capture maps the selected item's scene geometry to image pixels, clamps the rectangle to the frame bounds, and crops it.
+For item discovery, the server snapshots the Quick Item model, reads each row's `ObjectId`, and resolves that ID through the QObject-tree model to supply a stable `objectPath`. For capture, the server resolves the requested QObject path to an `ObjectId`, selects the matching Quick Item model row, waits for `QuickRemoteView::frameUpdated`, and converts the resulting `RemoteViewFrame` to PNG. The Quick Inspector places the selected item's `QuickItemGeometry` in `RemoteViewFrame::data`; item capture reads its `itemRect`, maps it from the frame's `sceneRect` to image pixels, clamps the rectangle to the frame bounds, and crops it. Window capture returns the complete frame.
 
 ## Error Handling
 

@@ -4,7 +4,7 @@
 
 **Goal:** Add MCP tools that inspect a Qt Quick item tree and capture a QQuickWindow or QQuickItem as PNG, then prove them against `E:\Dev\qml-rhi`.
 
-**Architecture:** `McpServer` consumes the Quick Inspector's existing `QuickItemModel` and `QuickRemoteView`. Item discovery maps each Quick-model `ObjectId` to the established QObject-tree path. Capture selects the Quick model row, requests a remote frame, and returns the full frame or an item-geometry crop.
+**Architecture:** `McpServer` consumes the Quick Inspector's existing `QuickItemModel` and `QuickRemoteView`. Item discovery maps each Quick-model `ObjectId` to the established QObject-tree path. Capture selects the Quick model row, requests a remote frame, and returns the full frame or a crop derived from the selected item's `QuickItemGeometry` in `RemoteViewFrame::data`.
 
 **Tech Stack:** C++17, Qt 6.11 Quick, GammaRay ObjectBroker/RemoteModel protocol, CMake/Ninja, PowerShell.
 
@@ -54,7 +54,7 @@
 - [ ] Write failing calls for `gammaray_grab_quick_window` and `gammaray_grab_quick_item` using the discovery result's `objectPath`; require one MCP image content item, PNG metadata, and positive dimensions.
 - [ ] Run the script and confirm both calls fail before capture is implemented.
 - [ ] Add `callGrabQuickImage(const QJsonValue &, const QJsonObject &, bool cropToItem)`. Resolve the QObject path to `ObjectId`, find/select the Quick Item model row, retrieve `com.kdab.GammaRay.QuickRemoteView` as `RemoteViewInterface`, call `setViewActive(true)` and `requestCompleteFrame()`, then disconnect after the first `frameUpdated`.
-- [ ] For window capture pass the frame image to `sendImageToolResult()` with `captureKind: quickWindow`. For item capture map the selected item geometry into the frame, intersect it with `frame.image().rect()`, reject an empty rectangle, and return `frame.image().copy(cropRect)` with `captureKind: quickItem` and `cropRect` metadata.
+- [ ] For window capture pass the frame image to `sendImageToolResult()` with `captureKind: quickWindow`. For item capture read `frame.data.value<QuickItemGeometry>().itemRect`, map it from `frame.sceneRect()` to the pixel dimensions of `frame.image()`, intersect it with `frame.image().rect()`, reject an empty rectangle, and return `frame.image().copy(cropRect)` with `captureKind: quickItem` and `cropRect` metadata.
 - [ ] Build and rerun the script until both PNG checks pass. Then run `.\scripts\test-mcp-gui-capture.ps1` to prove QWidget regression compatibility.
 - [ ] Commit with `git add mcp/mcpserver.cpp mcp/mcpserver.h scripts/test-mcp-quick-capture.ps1; git commit -m "feat: capture Qt Quick scenes through MCP"`.
 
