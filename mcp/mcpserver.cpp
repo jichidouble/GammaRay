@@ -1004,16 +1004,21 @@ void McpServer::resetSession()
 }
 
 void McpServer::scheduleStableSnapshot(const QJsonValue &id, SnapshotProducer producer,
-                                       int timeoutMs, int minimumWaitMs)
+                                       int timeoutMs, int minimumWaitMs,
+                                       QSharedPointer<QElapsedTimer> elapsed)
 {
     struct State
     {
-        QElapsedTimer elapsed;
+        QSharedPointer<QElapsedTimer> elapsed;
         QByteArray previous;
         int stablePasses = 0;
     };
     auto state = QSharedPointer<State>::create();
-    state->elapsed.start();
+    state->elapsed = std::move(elapsed);
+    if (!state->elapsed) {
+        state->elapsed = QSharedPointer<QElapsedTimer>::create();
+        state->elapsed->start();
+    }
     auto timer = new QTimer(this);
     timer->setInterval(75);
 
@@ -1027,8 +1032,8 @@ void McpServer::scheduleStableSnapshot(const QJsonValue &id, SnapshotProducer pr
             state->stablePasses = 0;
         state->previous = current;
 
-        const bool timedOut = state->elapsed.elapsed() >= timeoutMs;
-        const bool stable = state->elapsed.elapsed() >= minimumWaitMs
+        const bool timedOut = state->elapsed->elapsed() >= timeoutMs;
+        const bool stable = !timedOut && state->elapsed->elapsed() >= minimumWaitMs
             && loading == 0 && state->stablePasses >= 2;
         if (!timedOut && !stable)
             return;
@@ -1136,6 +1141,7 @@ QJsonObject McpServer::quickItemSnapshot(QAbstractItemModel *quickModel,
 {
     QJsonArray items;
     int loading = 0;
+    int unmapped = 0;
     int visited = 0;
     bool truncated = false;
     QRegularExpression expression;
@@ -1164,19 +1170,24 @@ QJsonObject McpServer::quickItemSnapshot(QAbstractItemModel *quickModel,
             if (matches) {
                 const ObjectId objectId = nameIndex.data(ObjectModel::ObjectIdRole).value<ObjectId>();
                 const QModelIndex objectIndex = indexForObjectId(objectModel, objectId);
-                loading += loadingState(objectIndex);
-                items.append(QJsonObject {
-                    { QStringLiteral("quickPath"), indexPath(path) },
-                    { QStringLiteral("objectPath"), indexPath(objectIndex) },
-                    { QStringLiteral("objectId"), QStringLiteral("0x%1").arg(objectId.id(), 0, 16) },
-                    { QStringLiteral("name"), name },
-                    { QStringLiteral("type"), type },
-                    { QStringLiteral("depth"), depth }
-                });
-                if (items.size() >= limit) {
-                    truncated = true;
-                    path.removeLast();
-                    return;
+                if (!objectIndex.isValid()) {
+                    ++unmapped;
+                    ++loading;
+                } else {
+                    loading += loadingState(objectIndex);
+                    items.append(QJsonObject {
+                        { QStringLiteral("quickPath"), indexPath(path) },
+                        { QStringLiteral("objectPath"), indexPath(objectIndex) },
+                        { QStringLiteral("objectId"), QStringLiteral("0x%1").arg(objectId.id(), 0, 16) },
+                        { QStringLiteral("name"), name },
+                        { QStringLiteral("type"), type },
+                        { QStringLiteral("depth"), depth }
+                    });
+                    if (items.size() >= limit) {
+                        truncated = true;
+                        path.removeLast();
+                        return;
+                    }
                 }
             }
             if (depth < maxDepth)
@@ -1191,6 +1202,7 @@ QJsonObject McpServer::quickItemSnapshot(QAbstractItemModel *quickModel,
     return {
         { QStringLiteral("items"), items },
         { QStringLiteral("count"), items.size() },
+        { QStringLiteral("unmapped"), unmapped },
         { QStringLiteral("visited"), visited },
         { QStringLiteral("truncated"), truncated },
         { QStringLiteral("pattern"), pattern },
@@ -1326,24 +1338,37 @@ void McpServer::callListQuickItems(const QJsonValue &id, const QJsonObject &argu
     auto selectQuickWindow = QSharedPointer<std::function<void()>>::create();
     *selectQuickWindow = [this, id, inspector, objectModel, quickWindowModel, quickModel, pattern, maxDepth, limit, timeoutMs,
                           elapsed, selectQuickWindow]() {
+        const int remainingMs = timeoutMs - static_cast<int>(elapsed->elapsed());
+        if (remainingMs <= 0) {
+            sendToolError(id, QStringLiteral("Timed out waiting for an active QQuickWindow."),
+                          { { QStringLiteral("timeoutMs"), timeoutMs } });
+            return;
+        }
         const QModelIndex quickWindowModelIndex = quickWindowModel->index(0, 0);
         if (quickWindowModelIndex.isValid()) {
-            QTimer::singleShot(250, this, [this, id, inspector, quickModel, objectModel, pattern, maxDepth, limit, timeoutMs]() {
+            QTimer::singleShot(qMin(250, remainingMs), this, [this, id, inspector, quickModel, objectModel, pattern, maxDepth, limit, timeoutMs, elapsed]() {
+                const int remainingMs = timeoutMs - static_cast<int>(elapsed->elapsed());
+                if (remainingMs <= 0) {
+                    sendToolError(id, QStringLiteral("Timed out waiting to select the active QQuickWindow."),
+                                  { { QStringLiteral("timeoutMs"), timeoutMs } });
+                    return;
+                }
                 inspector->selectWindow(0);
-                QTimer::singleShot(500, this, [this, id, quickModel, objectModel, pattern, maxDepth, limit, timeoutMs]() {
+                QTimer::singleShot(qMin(500, remainingMs), this, [this, id, quickModel, objectModel, pattern, maxDepth, limit, timeoutMs, elapsed]() {
+                    const int remainingMs = timeoutMs - static_cast<int>(elapsed->elapsed());
+                    if (remainingMs <= 0) {
+                        sendToolError(id, QStringLiteral("Timed out waiting for a Qt Quick item snapshot."),
+                                      { { QStringLiteral("timeoutMs"), timeoutMs } });
+                        return;
+                    }
                     scheduleStableSnapshot(id, [this, quickModel, objectModel, pattern, maxDepth, limit]() {
                         return quickItemSnapshot(quickModel, objectModel, pattern, maxDepth, limit);
-                    }, timeoutMs);
+                    }, timeoutMs, 300, elapsed);
                 });
             });
             return;
         }
-        if (elapsed->elapsed() >= timeoutMs) {
-            sendToolError(id, QStringLiteral("No QQuickWindow is available in the QObject tree."),
-                          { { QStringLiteral("model"), QString::fromLatin1(ObjectTreeModelName) } });
-            return;
-        }
-        QTimer::singleShot(75, this, *selectQuickWindow);
+        QTimer::singleShot(qMin(75, remainingMs), this, *selectQuickWindow);
     };
     (*selectQuickWindow)();
 }

@@ -107,6 +107,11 @@ try {
     if ($quickItems.isError) {
         throw "gammaray_list_quick_items returned an error: $($quickItems.structuredContent | ConvertTo-Json -Compress)"
     }
+    foreach ($quickItem in @($quickItems.structuredContent.items)) {
+        if ([string]::IsNullOrWhiteSpace($quickItem.objectPath)) {
+            throw "gammaray_list_quick_items returned an item without a mapped objectPath: $($quickItem | ConvertTo-Json -Compress)"
+        }
+    }
     $item = @($quickItems.structuredContent.items | Where-Object {
         $_.type -match 'QQuickItem|TriangleRhiItem' -and -not [string]::IsNullOrWhiteSpace($_.objectPath)
     }) | Select-Object -First 1

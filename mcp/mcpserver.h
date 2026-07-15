@@ -11,6 +11,7 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QObject>
+#include <QSharedPointer>
 #include <QUrl>
 
 #include <functional>
@@ -18,6 +19,7 @@
 
 QT_BEGIN_NAMESPACE
 class QAbstractItemModel;
+class QElapsedTimer;
 class QImage;
 QT_END_NAMESPACE
 
@@ -95,7 +97,8 @@ private:
     void resetSession();
 
     void scheduleStableSnapshot(const QJsonValue &id, SnapshotProducer producer, int timeoutMs,
-                                int minimumWaitMs = 300);
+                                int minimumWaitMs = 300,
+                                QSharedPointer<QElapsedTimer> elapsed = { });
     void afterProblemScan(const QJsonValue &id, int timeoutMs, SnapshotProducer producer);
 
     QJsonObject objectSnapshot(QAbstractItemModel *model, const QString &pattern,
