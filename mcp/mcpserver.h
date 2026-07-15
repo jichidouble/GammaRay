@@ -100,6 +100,9 @@ private:
 
     QJsonObject objectSnapshot(QAbstractItemModel *model, const QString &pattern,
                                int maxDepth, int limit) const;
+    QJsonObject quickItemSnapshot(QAbstractItemModel *quickModel,
+                                  QAbstractItemModel *objectModel, const QString &pattern,
+                                  int maxDepth, int limit) const;
     QJsonObject propertySnapshot(QAbstractItemModel *model, int maxDepth, int limit) const;
     QJsonObject messageSnapshot(QAbstractItemModel *model, const QString &minimumType,
                                 int limit) const;

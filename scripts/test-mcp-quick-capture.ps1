@@ -1,6 +1,7 @@
 param(
     [string]$QtRoot = 'D:\Qt',
-    [string]$BuildDirectory = 'build-qt6.11.1-mingw'
+    [string]$BuildDirectory = 'build-qt6.11.1-mingw',
+    [string]$QuickTarget = 'E:\Dev\qml-rhi\build\qml_rhi.exe'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,9 +15,18 @@ $BinDirectory = Join-Path $BuildDirectory 'bin'
 $Server = Join-Path $BinDirectory 'gammaray-mcp.exe'
 $QtBin = Join-Path $QtRoot '6.11.1\mingw_64\bin'
 $MingwBin = Join-Path $QtRoot 'Tools\mingw1310_64\bin'
+$QuickTarget = [System.IO.Path]::GetFullPath($QuickTarget)
+$QuickTargetProcessName = [System.IO.Path]::GetFileNameWithoutExtension($QuickTarget)
+$ExistingQuickTargetPids = @(
+    Get-Process -Name $QuickTargetProcessName -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -eq $QuickTarget } |
+        ForEach-Object { $_.Id }
+)
 
-if (-not (Test-Path -LiteralPath $Server -PathType Leaf)) {
-    throw "Required executable was not built: $Server"
+foreach ($path in @($Server, $QuickTarget)) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw "Required executable was not built: $path"
+    }
 }
 
 $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
@@ -28,6 +38,8 @@ $startInfo.RedirectStandardOutput = $true
 $startInfo.RedirectStandardError = $true
 $startInfo.CreateNoWindow = $true
 $startInfo.Environment['PATH'] = "$BinDirectory;$QtBin;$MingwBin;$($startInfo.Environment['PATH'])"
+$startInfo.Environment['QT_QPA_PLATFORM'] = 'offscreen'
+$startInfo.Environment['QSG_RHI_BACKEND'] = 'opengl'
 $serverProcess = [System.Diagnostics.Process]::new()
 $serverProcess.StartInfo = $startInfo
 if (-not $serverProcess.Start()) {
@@ -50,7 +62,8 @@ function Invoke-Mcp {
     }
     $line = $lineTask.Result
     if ([string]::IsNullOrWhiteSpace($line)) {
-        throw "MCP process closed while waiting for $Method. stderr: $($serverProcess.StandardError.ReadToEnd())"
+        $exitCode = if ($serverProcess.HasExited) { $serverProcess.ExitCode } else { 'unknown' }
+        throw "MCP process closed while waiting for $Method (exit $exitCode). stderr: $($serverProcess.StandardError.ReadToEnd())"
     }
     $response = $line | ConvertFrom-Json
     if ($response.error) {
@@ -76,7 +89,32 @@ try {
         }
     }
 
-    Write-Output 'GammaRay MCP Qt Quick tool advertisement test passed.'
+    $launch = Invoke-Mcp 'tools/call' ([ordered]@{
+        name = 'gammaray_launch'
+        arguments = [ordered]@{
+            executable = $QuickTarget
+            environment = @{ QT_QPA_PLATFORM = 'offscreen'; QSG_RHI_BACKEND = 'opengl' }
+        }
+    })
+    if ($launch.isError) {
+        throw "Could not launch Qt Quick target: $($launch.structuredContent | ConvertTo-Json -Compress)"
+    }
+
+    $quickItems = Invoke-Mcp 'tools/call' ([ordered]@{
+        name = 'gammaray_list_quick_items'
+        arguments = @{ pattern = 'QQuickItem|TriangleRhiItem'; maxDepth = 12; limit = 100; timeoutMs = 15000 }
+    })
+    if ($quickItems.isError) {
+        throw "gammaray_list_quick_items returned an error: $($quickItems.structuredContent | ConvertTo-Json -Compress)"
+    }
+    $item = @($quickItems.structuredContent.items | Where-Object {
+        $_.type -match 'QQuickItem|TriangleRhiItem' -and -not [string]::IsNullOrWhiteSpace($_.objectPath)
+    }) | Select-Object -First 1
+    if ($null -eq $item) {
+        throw "The Qt Quick target did not expose a visible QQuickItem or TriangleRhiItem with an objectPath: $($quickItems.structuredContent | ConvertTo-Json -Compress -Depth 16)"
+    }
+
+    Write-Output 'GammaRay MCP Qt Quick item discovery integration test passed.'
 }
 finally {
     if (-not $serverProcess.HasExited) {
@@ -86,4 +124,8 @@ finally {
         }
     }
     $serverProcess.Dispose()
+
+    Get-Process -Name $QuickTargetProcessName -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -eq $QuickTarget -and $ExistingQuickTargetPids -notcontains $_.Id } |
+        Stop-Process -Force
 }

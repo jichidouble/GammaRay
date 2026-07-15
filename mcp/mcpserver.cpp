@@ -25,6 +25,7 @@
 #include <launcher/core/probeabi.h>
 #include <launcher/core/probeabidetector.h>
 #include <launcher/core/probefinder.h>
+#include <plugins/quickinspector/quickinspectorinterface.h>
 #include <ui/clienttoolmanager.h>
 #include <widgetinspectorinterface.h>
 
@@ -63,6 +64,7 @@ constexpr auto ProblemModelName = "com.kdab.GammaRay.ProblemModel";
 constexpr auto WidgetTreeModelName = "com.kdab.GammaRay.WidgetTree";
 constexpr auto WidgetRemoteViewName = "com.kdab.GammaRay.WidgetRemoteView";
 constexpr auto QuickItemModelName = "com.kdab.GammaRay.QuickItemModel";
+constexpr auto QuickWindowModelName = "com.kdab.GammaRay.QuickWindowModel";
 constexpr auto QuickRemoteViewName = "com.kdab.GammaRay.QuickRemoteView";
 
 class McpProblemReporterClient : public ProblemReporterInterface
@@ -125,6 +127,35 @@ public:
 QObject *createWidgetInspectorClient(const QString &, QObject *parent)
 {
     return new McpWidgetInspectorClient(parent);
+}
+
+class McpQuickInspectorClient : public QuickInspectorInterface
+{
+    Q_OBJECT
+    Q_INTERFACES(GammaRay::QuickInspectorInterface)
+public:
+    explicit McpQuickInspectorClient(QObject *parent)
+        : QuickInspectorInterface(parent)
+    {
+    }
+
+    void selectWindow(int index) override
+    {
+        Endpoint::instance()->invokeObject(objectName(), "selectWindow", QVariantList() << index);
+    }
+
+    void setCustomRenderMode(QuickInspectorInterface::RenderMode) override {}
+    void checkFeatures() override {}
+    void setOverlaySettings(const QuickDecorationsSettings &) override {}
+    void checkOverlaySettings() override {}
+    void analyzePainting() override {}
+    void checkSlowMode() override {}
+    void setSlowMode(bool) override {}
+};
+
+QObject *createQuickInspectorClient(const QString &, QObject *parent)
+{
+    return new McpQuickInspectorClient(parent);
 }
 
 QJsonObject emptyObjectSchema()
@@ -244,6 +275,16 @@ QString indexPath(const QVector<int> &rows)
     return parts.join(QLatin1Char('/'));
 }
 
+QString indexPath(QModelIndex index)
+{
+    QVector<int> rows;
+    while (index.isValid()) {
+        rows.prepend(index.row());
+        index = index.parent();
+    }
+    return indexPath(rows);
+}
+
 int loadingState(const QModelIndex &index)
 {
     const int state = index.data(RemoteModelRole::LoadingState).toInt();
@@ -310,6 +351,8 @@ McpServer::McpServer(QObject *parent)
         createProblemReporterClient);
     ObjectBroker::registerClientObjectFactoryCallback<WidgetInspectorInterface *>(
         createWidgetInspectorClient);
+    ObjectBroker::registerClientObjectFactoryCallback<QuickInspectorInterface *>(
+        createQuickInspectorClient);
 }
 
 McpServer::~McpServer()
@@ -1087,6 +1130,75 @@ void McpServer::callListObjects(const QJsonValue &id, const QJsonObject &argumen
     scheduleStableSnapshot(id, [this, model, pattern, maxDepth, limit]() { return objectSnapshot(model, pattern, maxDepth, limit); }, timeoutMs);
 }
 
+QJsonObject McpServer::quickItemSnapshot(QAbstractItemModel *quickModel,
+                                         QAbstractItemModel *objectModel,
+                                         const QString &pattern, int maxDepth, int limit) const
+{
+    QJsonArray items;
+    int loading = 0;
+    int visited = 0;
+    bool truncated = false;
+    QRegularExpression expression;
+    if (!pattern.isEmpty())
+        expression = QRegularExpression(pattern, QRegularExpression::CaseInsensitiveOption);
+
+    std::function<void(const QModelIndex &, int, QVector<int>)> visit;
+    visit = [&](const QModelIndex &parent, int depth, QVector<int> path) {
+        if (truncated || depth > maxDepth)
+            return;
+        const int rows = quickModel->rowCount(parent);
+        for (int row = 0; row < rows; ++row) {
+            if (++visited > 10000) {
+                truncated = true;
+                return;
+            }
+            path.append(row);
+            const QModelIndex nameIndex = quickModel->index(row, 0, parent);
+            const QModelIndex typeIndex = quickModel->index(row, 1, parent);
+            const QString name = nameIndex.data(Qt::DisplayRole).toString();
+            const QString type = typeIndex.data(Qt::DisplayRole).toString();
+            loading += loadingState(nameIndex) + loadingState(typeIndex);
+
+            const bool matches = pattern.isEmpty()
+                || expression.match(name + QLatin1Char(' ') + type).hasMatch();
+            if (matches) {
+                const ObjectId objectId = nameIndex.data(ObjectModel::ObjectIdRole).value<ObjectId>();
+                const QModelIndex objectIndex = indexForObjectId(objectModel, objectId);
+                loading += loadingState(objectIndex);
+                items.append(QJsonObject {
+                    { QStringLiteral("quickPath"), indexPath(path) },
+                    { QStringLiteral("objectPath"), indexPath(objectIndex) },
+                    { QStringLiteral("objectId"), QStringLiteral("0x%1").arg(objectId.id(), 0, 16) },
+                    { QStringLiteral("name"), name },
+                    { QStringLiteral("type"), type },
+                    { QStringLiteral("depth"), depth }
+                });
+                if (items.size() >= limit) {
+                    truncated = true;
+                    path.removeLast();
+                    return;
+                }
+            }
+            if (depth < maxDepth)
+                visit(nameIndex, depth + 1, path);
+            path.removeLast();
+            if (truncated)
+                return;
+        }
+    };
+    visit(QModelIndex(), 0, { });
+
+    return {
+        { QStringLiteral("items"), items },
+        { QStringLiteral("count"), items.size() },
+        { QStringLiteral("visited"), visited },
+        { QStringLiteral("truncated"), truncated },
+        { QStringLiteral("pattern"), pattern },
+        { QStringLiteral("maxDepth"), maxDepth },
+        { QStringLiteral("_loading"), loading }
+    };
+}
+
 QJsonObject McpServer::propertySnapshot(QAbstractItemModel *model, int maxDepth, int limit) const
 {
     QJsonArray properties;
@@ -1184,10 +1296,56 @@ void McpServer::callGrabWindow(const QJsonValue &id, const QJsonObject &argument
     callGrabImage(id, arguments, true);
 }
 
-void McpServer::callListQuickItems(const QJsonValue &id, const QJsonObject &)
+void McpServer::callListQuickItems(const QJsonValue &id, const QJsonObject &arguments)
 {
-    sendToolError(id, QStringLiteral("Qt Quick item discovery is not available yet."),
-                  { { QStringLiteral("model"), QString::fromLatin1(QuickItemModelName) } });
+    if (!ensureReady(id))
+        return;
+    const QString pattern = arguments.value(QStringLiteral("pattern")).toString();
+    if (!pattern.isEmpty()) {
+        const QRegularExpression expression(pattern);
+        if (!expression.isValid()) {
+            sendToolError(id, QStringLiteral("Invalid regular expression: %1").arg(expression.errorString()));
+            return;
+        }
+    }
+    const int maxDepth = boundedInteger(arguments, QStringLiteral("maxDepth"), 5, 0, 20);
+    const int limit = boundedInteger(arguments, QStringLiteral("limit"), 250, 1, 2000);
+    const int timeoutMs = boundedInteger(arguments, QStringLiteral("timeoutMs"), 5000, 250, 30000);
+    QAbstractItemModel *objectModel = ObjectBroker::model(QString::fromLatin1(ObjectTreeModelName));
+    QAbstractItemModel *quickWindowModel = ObjectBroker::model(QString::fromLatin1(QuickWindowModelName));
+    QAbstractItemModel *quickModel = ObjectBroker::model(QString::fromLatin1(QuickItemModelName));
+    const QByteArray interfaceName(qobject_interface_iid<QuickInspectorInterface *>());
+    auto *inspector = qobject_cast<QuickInspectorInterface *>(
+        ObjectBroker::objectInternal(QString::fromUtf8(interfaceName), interfaceName));
+    if (!inspector) {
+        sendToolError(id, QStringLiteral("The Quick Inspector interface is unavailable."));
+        return;
+    }
+    auto elapsed = QSharedPointer<QElapsedTimer>::create();
+    elapsed->start();
+    auto selectQuickWindow = QSharedPointer<std::function<void()>>::create();
+    *selectQuickWindow = [this, id, inspector, objectModel, quickWindowModel, quickModel, pattern, maxDepth, limit, timeoutMs,
+                          elapsed, selectQuickWindow]() {
+        const QModelIndex quickWindowModelIndex = quickWindowModel->index(0, 0);
+        if (quickWindowModelIndex.isValid()) {
+            QTimer::singleShot(250, this, [this, id, inspector, quickModel, objectModel, pattern, maxDepth, limit, timeoutMs]() {
+                inspector->selectWindow(0);
+                QTimer::singleShot(500, this, [this, id, quickModel, objectModel, pattern, maxDepth, limit, timeoutMs]() {
+                    scheduleStableSnapshot(id, [this, quickModel, objectModel, pattern, maxDepth, limit]() {
+                        return quickItemSnapshot(quickModel, objectModel, pattern, maxDepth, limit);
+                    }, timeoutMs);
+                });
+            });
+            return;
+        }
+        if (elapsed->elapsed() >= timeoutMs) {
+            sendToolError(id, QStringLiteral("No QQuickWindow is available in the QObject tree."),
+                          { { QStringLiteral("model"), QString::fromLatin1(ObjectTreeModelName) } });
+            return;
+        }
+        QTimer::singleShot(75, this, *selectQuickWindow);
+    };
+    (*selectQuickWindow)();
 }
 
 void McpServer::callGrabQuickWindow(const QJsonValue &id, const QJsonObject &arguments)
