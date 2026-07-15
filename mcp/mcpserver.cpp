@@ -26,6 +26,7 @@
 #include <launcher/core/probeabidetector.h>
 #include <launcher/core/probefinder.h>
 #include <plugins/quickinspector/quickinspectorinterface.h>
+#include <plugins/quickinspector/quickitemgeometry.h>
 #include <ui/clienttoolmanager.h>
 #include <widgetinspectorinterface.h>
 
@@ -38,6 +39,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
+#include <QPointer>
 #include <QProcessEnvironment>
 #include <QRegularExpression>
 #include <QSet>
@@ -1383,10 +1385,215 @@ void McpServer::callGrabQuickItem(const QJsonValue &id, const QJsonObject &argum
     callGrabQuickImage(id, arguments, true);
 }
 
-void McpServer::callGrabQuickImage(const QJsonValue &id, const QJsonObject &, bool)
+void McpServer::callGrabQuickImage(const QJsonValue &id, const QJsonObject &arguments, bool cropToItem)
 {
-    sendToolError(id, QStringLiteral("Qt Quick capture is not available yet."),
-                  { { QStringLiteral("remoteView"), QString::fromLatin1(QuickRemoteViewName) } });
+    if (!ensureReady(id))
+        return;
+    if (m_captureRequestActive) {
+        sendToolError(id, QStringLiteral("A GUI screenshot request is already in progress. Retry after it finishes."));
+        return;
+    }
+
+    const QString objectPath = arguments.value(QStringLiteral("objectPath")).toString().trimmed();
+    if (objectPath.isEmpty()) {
+        sendToolError(id, QStringLiteral("objectPath is required for a Qt Quick screenshot."));
+        return;
+    }
+
+    struct CaptureState
+    {
+        QJsonValue requestId;
+        QString objectPath;
+        ObjectId objectId;
+        int maxWidth = 1920;
+        int maxHeight = 1080;
+        int timeoutMs = 10000;
+        bool cropToItem = false;
+        bool finished = false;
+        QElapsedTimer elapsed;
+        QPointer<RemoteViewInterface> remoteView;
+        QList<QMetaObject::Connection> connections;
+    };
+
+    auto state = QSharedPointer<CaptureState>::create();
+    state->requestId = id;
+    state->objectPath = objectPath;
+    state->maxWidth = boundedInteger(arguments, QStringLiteral("maxWidth"), 1920, 1, 8192);
+    state->maxHeight = boundedInteger(arguments, QStringLiteral("maxHeight"), 1080, 1, 8192);
+    state->timeoutMs = boundedInteger(arguments, QStringLiteral("timeoutMs"), 10000, 250, 30000);
+    state->cropToItem = cropToItem;
+    state->elapsed.start();
+    m_captureRequestActive = true;
+
+    const auto complete = [this, state](const QImage &sourceImage, const QRect &cropRect, const QString &error) {
+        if (state->finished)
+            return;
+        state->finished = true;
+        for (const QMetaObject::Connection &connection : std::as_const(state->connections))
+            QObject::disconnect(connection);
+        if (state->remoteView)
+            state->remoteView->setViewActive(false);
+        m_captureRequestActive = false;
+
+        const QString captureKind = state->cropToItem ? QStringLiteral("quickItem") : QStringLiteral("quickWindow");
+        if (!error.isEmpty()) {
+            sendToolError(state->requestId, error,
+                          { { QStringLiteral("objectPath"), state->objectPath },
+                            { QStringLiteral("captureKind"), captureKind } });
+            return;
+        }
+        if (sourceImage.isNull()) {
+            sendToolError(state->requestId, QStringLiteral("The Quick Inspector returned an empty image."),
+                          { { QStringLiteral("objectPath"), state->objectPath },
+                            { QStringLiteral("captureKind"), captureKind } });
+            return;
+        }
+
+        QImage outputImage = state->cropToItem ? sourceImage.copy(cropRect) : sourceImage;
+        if (outputImage.isNull()) {
+            sendToolError(state->requestId, QStringLiteral("The selected Qt Quick item does not intersect the captured frame."),
+                          { { QStringLiteral("objectPath"), state->objectPath },
+                            { QStringLiteral("captureKind"), captureKind } });
+            return;
+        }
+        if (outputImage.width() > state->maxWidth || outputImage.height() > state->maxHeight) {
+            outputImage = outputImage.scaled(state->maxWidth, state->maxHeight,
+                                              Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        }
+
+        QJsonObject metadata {
+            { QStringLiteral("captureKind"), captureKind },
+            { QStringLiteral("objectPath"), state->objectPath },
+            { QStringLiteral("objectId"), QStringLiteral("0x%1").arg(state->objectId.id(), 0, 16) },
+            { QStringLiteral("sourceImage"), imageSizeObject(sourceImage) },
+            { QStringLiteral("image"), imageSizeObject(outputImage) },
+            { QStringLiteral("scaled"), outputImage.size() != (state->cropToItem ? cropRect.size() : sourceImage.size()) },
+            { QStringLiteral("mimeType"), QStringLiteral("image/png") }
+        };
+        if (state->cropToItem) {
+            metadata.insert(QStringLiteral("cropRect"), QJsonObject {
+                                                         { QStringLiteral("x"), cropRect.x() },
+                                                         { QStringLiteral("y"), cropRect.y() },
+                                                         { QStringLiteral("width"), cropRect.width() },
+                                                         { QStringLiteral("height"), cropRect.height() } });
+        }
+        sendImageToolResult(state->requestId, metadata, outputImage);
+    };
+
+    const auto requestFrame = QSharedPointer<std::function<void()>>::create();
+    *requestFrame = [this, state, complete, requestFrame]() {
+        if (state->finished)
+            return;
+        const int remainingMs = state->timeoutMs - static_cast<int>(state->elapsed.elapsed());
+        if (remainingMs <= 0) {
+            complete(QImage(), QRect(), QStringLiteral("Timed out waiting for a Qt Quick remote-view frame."));
+            return;
+        }
+
+        auto *remoteView = qobject_cast<RemoteViewInterface *>(
+            ObjectBroker::objectInternal(QString::fromLatin1(QuickRemoteViewName),
+                                         QByteArray(qobject_interface_iid<RemoteViewInterface *>())));
+        if (!remoteView) {
+            QTimer::singleShot(qMin(100, remainingMs), this, *requestFrame);
+            return;
+        }
+        state->remoteView = remoteView;
+        state->connections.append(connect(remoteView, &RemoteViewInterface::frameUpdated,
+                                          this, [state, remoteView, complete](const RemoteViewFrame &frame) {
+            remoteView->clientViewUpdated();
+            if (!frame.isValid()) {
+                complete(QImage(), QRect(), QStringLiteral("The Quick Inspector returned an invalid remote-view frame."));
+                return;
+            }
+
+            QRect cropRect;
+            if (state->cropToItem) {
+                const QuickItemGeometry geometry = frame.data.value<QuickItemGeometry>();
+                const QRectF sceneRect = frame.sceneRect();
+                if (!geometry.itemRect.isValid() || !sceneRect.isValid() || sceneRect.width() <= 0.0 || sceneRect.height() <= 0.0) {
+                    complete(QImage(), QRect(),
+                             QStringLiteral("The Quick Inspector did not provide valid geometry for the selected item "
+                                            "(frameDataType=%1, expectedType=%2, itemRect=%3,%4 %5x%6, sceneRect=%7,%8 %9x%10).")
+                                 .arg(QString::fromUtf8(frame.data.typeName() ? frame.data.typeName() : "<none>"),
+                                      QString::fromUtf8(QMetaType::fromType<QuickItemGeometry>().name()))
+                                 .arg(geometry.itemRect.x())
+                                 .arg(geometry.itemRect.y())
+                                 .arg(geometry.itemRect.width())
+                                 .arg(geometry.itemRect.height())
+                                 .arg(sceneRect.x())
+                                 .arg(sceneRect.y())
+                                 .arg(sceneRect.width())
+                                 .arg(sceneRect.height()));
+                    return;
+                }
+                const QImage frameImage = frame.image();
+                const qreal scaleX = frameImage.width() / sceneRect.width();
+                const qreal scaleY = frameImage.height() / sceneRect.height();
+                const QRectF itemInPixels((geometry.itemRect.x() - sceneRect.x()) * scaleX,
+                                          (geometry.itemRect.y() - sceneRect.y()) * scaleY,
+                                          geometry.itemRect.width() * scaleX,
+                                          geometry.itemRect.height() * scaleY);
+                cropRect = itemInPixels.toAlignedRect().intersected(frameImage.rect());
+                if (cropRect.isEmpty()) {
+                    complete(QImage(), QRect(), QStringLiteral("The selected Qt Quick item is outside the captured frame."));
+                    return;
+                }
+            }
+            complete(frame.image(), cropRect, QString());
+        }));
+        remoteView->setViewActive(true);
+        remoteView->requestCompleteFrame();
+        QTimer::singleShot(remainingMs, this, [state, complete]() {
+            if (!state->finished)
+                complete(QImage(), QRect(), QStringLiteral("Timed out waiting for the Qt Quick remote-view frame."));
+        });
+    };
+
+    const auto selectItem = QSharedPointer<std::function<void()>>::create();
+    *selectItem = [this, state, complete, requestFrame, selectItem]() {
+        if (state->finished)
+            return;
+        const int remainingMs = state->timeoutMs - static_cast<int>(state->elapsed.elapsed());
+        if (remainingMs <= 0) {
+            complete(QImage(), QRect(), QStringLiteral("Timed out locating the selected QQuickItem in the Quick Inspector."));
+            return;
+        }
+
+        QAbstractItemModel *objectModel = ObjectBroker::model(QString::fromLatin1(ObjectTreeModelName));
+        QAbstractItemModel *quickModel = ObjectBroker::model(QString::fromLatin1(QuickItemModelName));
+        if (!objectModel || !quickModel) {
+            QTimer::singleShot(qMin(100, remainingMs), this, *selectItem);
+            return;
+        }
+        const QModelIndex objectIndex = indexFromPath(objectModel, state->objectPath);
+        if (!objectIndex.isValid()) {
+            complete(QImage(), QRect(), QStringLiteral("Object path is invalid or no longer exists: %1. Refresh it with gammaray_list_quick_items.")
+                                        .arg(state->objectPath));
+            return;
+        }
+        state->objectId = objectIndex.data(ObjectModel::ObjectIdRole).value<ObjectId>();
+        if (state->objectId.isNull()) {
+            QTimer::singleShot(qMin(100, remainingMs), this, *selectItem);
+            return;
+        }
+
+        const QModelIndex quickIndex = indexForObjectId(quickModel, state->objectId);
+        if (!quickIndex.isValid()) {
+            QTimer::singleShot(qMin(100, remainingMs), this, *selectItem);
+            return;
+        }
+        QItemSelectionModel *selection = ObjectBroker::selectionModel(quickModel);
+        if (!selection) {
+            complete(QImage(), QRect(), QStringLiteral("The Quick Inspector selection model is unavailable."));
+            return;
+        }
+        selection->select(quickIndex, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+        selection->setCurrentIndex(quickIndex,
+                                   QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+        QTimer::singleShot(qMin(250, remainingMs), this, *requestFrame);
+    };
+
+    (*selectItem)();
 }
 
 void McpServer::callGrabImage(const QJsonValue &id, const QJsonObject &arguments,

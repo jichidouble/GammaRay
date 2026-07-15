@@ -113,13 +113,44 @@ try {
         }
     }
     $item = @($quickItems.structuredContent.items | Where-Object {
-        $_.type -match 'QQuickItem|TriangleRhiItem' -and -not [string]::IsNullOrWhiteSpace($_.objectPath)
+        $_.type -match 'TriangleRhiItem' -and -not [string]::IsNullOrWhiteSpace($_.objectPath)
     }) | Select-Object -First 1
     if ($null -eq $item) {
-        throw "The Qt Quick target did not expose a visible QQuickItem or TriangleRhiItem with an objectPath: $($quickItems.structuredContent | ConvertTo-Json -Compress -Depth 16)"
+        throw "The Qt Quick target did not expose TriangleRhiItem with an objectPath: $($quickItems.structuredContent | ConvertTo-Json -Compress -Depth 16)"
     }
 
-    Write-Output 'GammaRay MCP Qt Quick item discovery integration test passed.'
+    $captures = @{}
+    foreach ($toolName in @('gammaray_grab_quick_window', 'gammaray_grab_quick_item')) {
+        $capture = Invoke-Mcp 'tools/call' ([ordered]@{
+            name = $toolName
+            arguments = @{ objectPath = $item.objectPath; maxWidth = 720; maxHeight = 420; timeoutMs = 15000 }
+        })
+        if ($capture.isError) {
+            throw "$toolName returned an error: $($capture.structuredContent | ConvertTo-Json -Compress -Depth 16)"
+        }
+        $images = @($capture.content | Where-Object { $_.type -eq 'image' })
+        if ($images.Count -ne 1 -or $images[0].mimeType -ne 'image/png' -or [string]::IsNullOrWhiteSpace($images[0].data)) {
+            throw "$toolName did not return exactly one PNG image content item."
+        }
+        $bytes = [Convert]::FromBase64String($images[0].data)
+        if ($bytes.Length -lt 100 -or $bytes[0..7] -join ',' -ne '137,80,78,71,13,10,26,10') {
+            throw "$toolName returned invalid PNG bytes."
+        }
+        $expectedKind = if ($toolName -eq 'gammaray_grab_quick_window') { 'quickWindow' } else { 'quickItem' }
+        if ($capture.structuredContent.captureKind -ne $expectedKind) {
+            throw "$toolName returned an unexpected capture metadata kind."
+        }
+        if ([int]$capture.structuredContent.image.width -le 0 -or [int]$capture.structuredContent.image.height -le 0) {
+            throw "$toolName returned non-positive image dimensions."
+        }
+        if ($toolName -eq 'gammaray_grab_quick_item' -and
+            ([int]$capture.structuredContent.cropRect.width -le 0 -or [int]$capture.structuredContent.cropRect.height -le 0)) {
+            throw "$toolName returned a non-positive crop rectangle."
+        }
+        $captures[$toolName] = $capture
+    }
+
+    Write-Output 'GammaRay MCP Qt Quick capture integration test passed.'
 }
 finally {
     if (-not $serverProcess.HasExited) {
