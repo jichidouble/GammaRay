@@ -13,7 +13,7 @@ set(gammaray_mcp_srcs
 add_executable(gammaray-mcp ${gammaray_mcp_srcs})
 target_compile_features(gammaray-mcp PRIVATE ${GAMMARAY_REQUIRED_CXX_FEATURES})
 target_compile_definitions(gammaray-mcp PRIVATE GAMMARAY_MCP_VERSION="0.2.0")
-target_include_directories(gammaray-mcp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../plugins/widgetinspector)
+target_include_directories(gammaray-mcp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../plugins/widgetinspector ${CMAKE_SOURCE_DIR})
 target_link_libraries(
     gammaray-mcp
     PRIVATE gammaray_client
